@@ -3,6 +3,8 @@
 # Mailcow Management Script
 # Usage: ./mailcow.sh [check|install|uninstall]
 
+# Disable errexit to prevent early exit on command failures
+set +e
 set -uo pipefail
 
 # Colors
@@ -69,29 +71,35 @@ check_environment() {
     # 2. OS Check
     echo "[Operating System]"
     if [ -f /etc/os-release ]; then
+        set +u
         . /etc/os-release
-        OS_NAME="$NAME"
-        OS_VERSION="$VERSION_ID"
+        set -u
+        OS_NAME="${NAME:-Unknown}"
+        OS_VERSION="${VERSION_ID:-Unknown}"
         
         SUPPORTED=false
-        case "$ID" in
+        case "${ID:-unknown}" in
             debian)
-                if [[ "${VERSION_ID%%.*}" -ge 11 ]]; then
+                VERSION_MAJOR="${VERSION_ID%%.*}"
+                if [ -n "$VERSION_MAJOR" ] && [ "$VERSION_MAJOR" -ge 11 ] 2>/dev/null; then
                     SUPPORTED=true
                 fi
                 ;;
             ubuntu)
-                if [[ "${VERSION_ID%%.*}" -ge 22 ]]; then
+                VERSION_MAJOR="${VERSION_ID%%.*}"
+                if [ -n "$VERSION_MAJOR" ] && [ "$VERSION_MAJOR" -ge 22 ] 2>/dev/null; then
                     SUPPORTED=true
                 fi
                 ;;
             almalinux|rocky)
-                if [[ "${VERSION_ID%%.*}" -ge 8 ]]; then
+                VERSION_MAJOR="${VERSION_ID%%.*}"
+                if [ -n "$VERSION_MAJOR" ] && [ "$VERSION_MAJOR" -ge 8 ] 2>/dev/null; then
                     SUPPORTED=true
                 fi
                 ;;
             alpine)
-                if [[ "${VERSION_ID%%.*}" -ge 3 ]]; then
+                VERSION_MAJOR="${VERSION_ID%%.*}"
+                if [ -n "$VERSION_MAJOR" ] && [ "$VERSION_MAJOR" -ge 3 ] 2>/dev/null; then
                     SUPPORTED=true
                 fi
                 ;;
@@ -111,9 +119,9 @@ check_environment() {
     echo "[Virtualization]"
     VIRT_TYPE="Unknown"
     if command -v systemd-detect-virt &> /dev/null; then
-        VIRT_TYPE=$(systemd-detect-virt)
+        VIRT_TYPE=$(systemd-detect-virt 2>/dev/null || echo "Unknown")
     elif [ -f /proc/cpuinfo ]; then
-        if grep -q "hypervisor" /proc/cpuinfo; then
+        if grep -q "hypervisor" /proc/cpuinfo 2>/dev/null; then
             VIRT_TYPE="VM"
         fi
     fi
@@ -136,13 +144,13 @@ check_environment() {
 
     # 4. CPU Check
     echo "[CPU]"
-    CPU_COUNT=$(nproc)
-    CPU_MHZ=$(lscpu | grep "CPU MHz" | awk '{print $3}' | cut -d'.' -f1)
+    CPU_COUNT=$(nproc 2>/dev/null || echo "1")
+    CPU_MHZ=$(lscpu 2>/dev/null | grep "CPU MHz" | awk '{print $3}' | cut -d'.' -f1 || echo "")
     if [ -z "$CPU_MHZ" ]; then
-        CPU_MHZ=$(lscpu | grep "CPU max MHz" | awk '{print $4}' | cut -d'.' -f1)
+        CPU_MHZ=$(lscpu 2>/dev/null | grep "CPU max MHz" | awk '{print $4}' | cut -d'.' -f1 || echo "")
     fi
 
-    if [ -n "$CPU_MHZ" ] && [ "$CPU_MHZ" -ge 1000 ]; then
+    if [ -n "$CPU_MHZ" ] && [ "$CPU_MHZ" -ge 1000 ] 2>/dev/null; then
         check_result "PASS" "CPU: ${CPU_COUNT} cores @ ${CPU_MHZ}MHz"
     else
         check_result "PASS" "CPU: ${CPU_COUNT} cores"
@@ -151,18 +159,18 @@ check_environment() {
 
     # 5. RAM Check
     echo "[Memory]"
-    TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
     TOTAL_RAM_GB=$((TOTAL_RAM_KB / 1024 / 1024))
-    SWAP_KB=$(grep SwapTotal /proc/meminfo | awk '{print $2}')
+    SWAP_KB=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
     SWAP_GB=$((SWAP_KB / 1024 / 1024))
 
-    if [ "$TOTAL_RAM_GB" -ge 6 ]; then
+    if [ "$TOTAL_RAM_GB" -ge 6 ] 2>/dev/null; then
         check_result "PASS" "RAM: ${TOTAL_RAM_GB}GB (Minimum: 6GB)"
     else
         check_result "FAIL" "RAM: ${TOTAL_RAM_GB}GB (Minimum: 6GB required)"
     fi
 
-    if [ "$SWAP_GB" -ge 1 ]; then
+    if [ "$SWAP_GB" -ge 1 ] 2>/dev/null; then
         check_result "PASS" "SWAP: ${SWAP_GB}GB"
     else
         check_result "WARN" "SWAP: ${SWAP_GB}GB (Recommended: 1GB+)"
@@ -171,10 +179,10 @@ check_environment() {
 
     # 6. Disk Space Check
     echo "[Disk Space]"
-    DISK_AVAIL=$(df / | tail -1 | awk '{print $4}')
+    DISK_AVAIL=$(df / 2>/dev/null | tail -1 | awk '{print $4}' || echo "0")
     DISK_AVAIL_GB=$((DISK_AVAIL / 1024 / 1024))
 
-    if [ "$DISK_AVAIL_GB" -ge 20 ]; then
+    if [ "$DISK_AVAIL_GB" -ge 20 ] 2>/dev/null; then
         check_result "PASS" "Available: ${DISK_AVAIL_GB}GB (Minimum: 20GB)"
     else
         check_result "FAIL" "Available: ${DISK_AVAIL_GB}GB (Minimum: 20GB required)"
@@ -207,14 +215,14 @@ check_environment() {
     # 9. Time Sync Check
     echo "[Date and Time]"
     if command -v timedatectl &> /dev/null; then
-        NTP_STATUS=$(timedatectl status | grep "NTP" | tail -1)
-        if echo "$NTP_STATUS" | grep -q "yes"; then
+        NTP_STATUS=$(timedatectl status 2>/dev/null | grep "NTP" | tail -1 || echo "")
+        if echo "$NTP_STATUS" | grep -q "yes" 2>/dev/null; then
             check_result "PASS" "NTP synchronized"
         else
             check_result "FAIL" "NTP not synchronized"
         fi
         
-        TIMEZONE=$(timedatectl | grep "Time zone" | awk '{print $3}')
+        TIMEZONE=$(timedatectl 2>/dev/null | grep "Time zone" | awk '{print $3}' || echo "Unknown")
         check_result "PASS" "Timezone: $TIMEZONE"
     else
         check_result "WARN" "Cannot check NTP status (timedatectl not found)"
@@ -224,11 +232,11 @@ check_environment() {
     # 10. Docker Check
     echo "[Docker]"
     if command -v docker &> /dev/null; then
-        DOCKER_VERSION=$(docker --version | awk '{print $3}' | sed 's/,//')
+        DOCKER_VERSION=$(docker --version 2>/dev/null | awk '{print $3}' | sed 's/,//' || echo "Unknown")
         check_result "PASS" "Docker installed: $DOCKER_VERSION"
         
         if docker compose version &> /dev/null; then
-            COMPOSE_VERSION=$(docker compose version --short)
+            COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || echo "Unknown")
             check_result "PASS" "Docker Compose installed: $COMPOSE_VERSION"
         else
             check_result "FAIL" "Docker Compose not found"
@@ -240,14 +248,18 @@ check_environment() {
 
     # 11. MTU Check
     echo "[Network MTU]"
-    DEFAULT_IFACE=$(ip route | grep default | awk '{print $5}' | head -1)
-    if [ -n "$DEFAULT_IFACE" ]; then
-        MTU=$(ip link show "$DEFAULT_IFACE" | grep mtu | awk '{print $5}')
-        if [ "$MTU" != "1500" ]; then
-            check_result "WARN" "MTU: $MTU on $DEFAULT_IFACE (Standard: 1500, may need adjustment)"
-        else
-            check_result "PASS" "MTU: $MTU on $DEFAULT_IFACE"
+    if command -v ip &> /dev/null; then
+        DEFAULT_IFACE=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -1 || echo "")
+        if [ -n "$DEFAULT_IFACE" ]; then
+            MTU=$(ip link show "$DEFAULT_IFACE" 2>/dev/null | grep mtu | awk '{print $5}' || echo "")
+            if [ -n "$MTU" ] && [ "$MTU" != "1500" ] 2>/dev/null; then
+                check_result "WARN" "MTU: $MTU on $DEFAULT_IFACE (Standard: 1500, may need adjustment)"
+            elif [ -n "$MTU" ]; then
+                check_result "PASS" "MTU: $MTU on $DEFAULT_IFACE"
+            fi
         fi
+    else
+        check_result "WARN" "Cannot check MTU (ip command not found)"
     fi
     echo ""
 

@@ -3,7 +3,7 @@
 # Mailcow Management Script
 # Usage: ./mailcow.sh [check|install|uninstall]
 
-set -euo pipefail
+set -uo pipefail
 
 # Colors
 RED='\033[0;31m'
@@ -76,16 +76,24 @@ check_environment() {
         SUPPORTED=false
         case "$ID" in
             debian)
-                [[ "${VERSION_ID%%.*}" -ge 11 ]] && SUPPORTED=true
+                if [[ "${VERSION_ID%%.*}" -ge 11 ]]; then
+                    SUPPORTED=true
+                fi
                 ;;
             ubuntu)
-                [[ "${VERSION_ID%%.*}" -ge 22 ]] && SUPPORTED=true
+                if [[ "${VERSION_ID%%.*}" -ge 22 ]]; then
+                    SUPPORTED=true
+                fi
                 ;;
             almalinux|rocky)
-                [[ "${VERSION_ID%%.*}" -ge 8 ]] && SUPPORTED=true
+                if [[ "${VERSION_ID%%.*}" -ge 8 ]]; then
+                    SUPPORTED=true
+                fi
                 ;;
             alpine)
-                [[ "${VERSION_ID%%.*}" -ge 3 ]] && SUPPORTED=true
+                if [[ "${VERSION_ID%%.*}" -ge 3 ]]; then
+                    SUPPORTED=true
+                fi
                 ;;
         esac
         

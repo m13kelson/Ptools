@@ -274,10 +274,66 @@ check_environment() {
 
     if [ "$FAIL" -eq 0 ]; then
         echo -e "${GREEN}✓ System meets mailcow requirements${NC}"
+        
+        # Check for warnings and provide suggestions
+        if [ "$WARN" -gt 0 ]; then
+            echo ""
+            echo -e "${YELLOW}Optional Improvements:${NC}"
+            echo "======================================"
+            
+            # Check for SWAP warning
+            SWAP_KB=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
+            SWAP_GB=$((SWAP_KB / 1024 / 1024))
+            if [ "$SWAP_GB" -lt 1 ] 2>/dev/null; then
+                echo -e "- Add SWAP space (Recommended: 2GB+):\n"
+                echo -e "${BLUE}fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab${NC}"
+                echo ""
+            fi
+            
+            echo "======================================"
+        fi
         return 0
     else
         echo -e "${RED}✗ System does not meet all requirements${NC}"
-        echo "Please fix the failed checks before installing mailcow"
+        echo ""
+        
+        # Build fix command
+        FIX_CMD=""
+        FIX_DESC=""
+        
+        # Check for NTP issue
+        if command -v timedatectl &> /dev/null; then
+            NTP_STATUS=$(timedatectl status 2>/dev/null | grep "NTP" | tail -1 || echo "")
+            if ! echo "$NTP_STATUS" | grep -q "yes" 2>/dev/null; then
+                FIX_CMD="${FIX_CMD}timedatectl set-ntp true && systemctl restart systemd-timesyncd && "
+                FIX_DESC="${FIX_DESC}- Enable NTP time sync\n"
+            fi
+        fi
+        
+        # Check for Docker Compose
+        if command -v docker &> /dev/null; then
+            if ! docker compose version &> /dev/null; then
+                FIX_CMD="${FIX_CMD}apt-get update && apt-get install -y docker-compose-plugin && "
+                FIX_DESC="${FIX_DESC}- Install Docker Compose Plugin\n"
+            fi
+        else
+            # Docker not installed
+            FIX_CMD="${FIX_CMD}curl -fsSL https://get.docker.com | bash && "
+            FIX_DESC="${FIX_DESC}- Install Docker & Docker Compose\n"
+        fi
+        
+        # Remove trailing " && "
+        FIX_CMD="${FIX_CMD% && }"
+        
+        if [ -n "$FIX_CMD" ]; then
+            echo -e "${YELLOW}Quick Fix:${NC}"
+            echo "======================================"
+            echo -e "$FIX_DESC"
+            echo -e "${BLUE}${FIX_CMD}${NC}"
+            echo "======================================"
+        else
+            echo "No automatic fix available"
+        fi
         return 1
     fi
 }

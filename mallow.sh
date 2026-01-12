@@ -23,15 +23,19 @@ WARN=0
 show_usage() {
     echo -e "${BLUE}Mailcow Management Script${NC}"
     echo ""
-    echo "Usage: $0 [command]"
+    echo "Usage: $0 [command] [options]"
     echo ""
     echo "Commands:"
-    echo "  check      - Check system environment"
-    echo "  install    - Install mailcow (Coming soon)"
-    echo "  uninstall  - Uninstall mailcow (Coming soon)"
+    echo "  check                          - Check system environment"
+    echo "  config <hostname> <timezone>   - Generate mailcow configuration"
+    echo "  install                        - Install mailcow"
+    echo "  uninstall                      - Uninstall mailcow"
     echo ""
-    echo "Example:"
+    echo "Examples:"
     echo "  $0 check"
+    echo "  $0 config mail.example.com Asia/Shanghai"
+    echo "  $0 install"
+    echo "  $0 uninstall"
     exit 0
 }
 
@@ -338,16 +342,374 @@ check_environment() {
     fi
 }
 
+# Config function - Generate mailcow.conf without interaction
+generate_config() {
+    local MAILCOW_HOSTNAME=$1
+    local MAILCOW_TZ=$2
+    local INSTALL_DIR="/opt/mailcow-dockerized"
+    
+    echo -e "${BLUE}Generating mailcow configuration...${NC}"
+    echo ""
+    
+    # Validate hostname
+    if [ -z "$MAILCOW_HOSTNAME" ]; then
+        echo -e "${RED}Error: Hostname is required${NC}"
+        echo "Usage: $0 config <hostname> <timezone>"
+        exit 1
+    fi
+    
+    DOTS=${MAILCOW_HOSTNAME//[^.]};
+    if [ ${#DOTS} -lt 1 ]; then
+        echo -e "${RED}Error: MAILCOW_HOSTNAME ($MAILCOW_HOSTNAME) is not a FQDN!${NC}"
+        exit 1
+    elif [[ "${MAILCOW_HOSTNAME: -1}" == "." ]]; then
+        echo -e "${RED}Error: MAILCOW_HOSTNAME ($MAILCOW_HOSTNAME) is ending with a dot!${NC}"
+        exit 1
+    fi
+    
+    # Validate timezone
+    if [ -z "$MAILCOW_TZ" ]; then
+        echo -e "${RED}Error: Timezone is required${NC}"
+        echo "Usage: $0 config <hostname> <timezone>"
+        exit 1
+    fi
+    
+    # Check if we're in mailcow directory (has docker-compose.yml)
+    if [ -f "docker-compose.yml" ] && grep -q "mailcow" "docker-compose.yml" 2>/dev/null; then
+        INSTALL_DIR="$PWD"
+        echo "Using current directory: $INSTALL_DIR"
+    elif [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}Error: Mailcow directory not found${NC}"
+        echo ""
+        echo "Please clone mailcow first:"
+        echo -e "${BLUE}cd /opt"
+        echo "git clone https://github.com/mailcow/mailcow-dockerized"
+        echo "cd mailcow-dockerized${NC}"
+        exit 1
+    fi
+    
+    cd "$INSTALL_DIR" || exit 1
+    
+    # Check for existing config
+    if [ -f mailcow.conf ]; then
+        echo -e "${YELLOW}Backing up existing mailcow.conf...${NC}"
+        mv mailcow.conf "mailcow.conf.backup.$(date +%Y%m%d_%H%M%S)"
+    fi
+    
+    # Detect memory for ClamAV decision
+    MEM_TOTAL=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+    if [ "${MEM_TOTAL}" -le "2621440" ]; then
+        SKIP_CLAMD=y
+        echo -e "${YELLOW}Low memory detected, disabling ClamAV${NC}"
+    else
+        SKIP_CLAMD=n
+    fi
+    
+    # Generate passwords
+    DBPASS=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2> /dev/null | head -c 28)
+    DBROOT=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2> /dev/null | head -c 28)
+    REDISPASS=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2> /dev/null | head -c 28)
+    SOGO_KEY=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2>/dev/null | head -c 16)
+    
+    # Detect Docker Compose version
+    if docker compose version &> /dev/null; then
+        COMPOSE_VERSION="native"
+    else
+        COMPOSE_VERSION="standalone"
+    fi
+    
+    # Detect IPv6
+    if ip -6 addr show | grep -q "inet6" && ! ip -6 addr show | grep -qE "inet6 ::1|inet6 fe80:"; then
+        IPV6_BOOL="true"
+    else
+        IPV6_BOOL="false"
+    fi
+    
+    echo "Creating mailcow.conf..."
+    
+    cat << EOF > mailcow.conf
+# ------------------------------
+# mailcow web ui configuration
+# ------------------------------
+MAILCOW_HOSTNAME=${MAILCOW_HOSTNAME}
+MAILCOW_PASS_SCHEME=BLF-CRYPT
+
+# ------------------------------
+# SQL database configuration
+# ------------------------------
+DBNAME=mailcow
+DBUSER=mailcow
+DBPASS=${DBPASS}
+DBROOT=${DBROOT}
+
+# ------------------------------
+# REDIS configuration
+# ------------------------------
+REDISPASS=${REDISPASS}
+
+# ------------------------------
+# HTTP/S Bindings
+# ------------------------------
+HTTP_PORT=80
+HTTP_BIND=
+HTTPS_PORT=443
+HTTPS_BIND=
+HTTP_REDIRECT=y
+
+# ------------------------------
+# Other bindings
+# ------------------------------
+SMTP_PORT=25
+SMTPS_PORT=465
+SUBMISSION_PORT=587
+IMAP_PORT=143
+IMAPS_PORT=993
+POP_PORT=110
+POPS_PORT=995
+SIEVE_PORT=4190
+DOVEADM_PORT=127.0.0.1:19991
+SQL_PORT=127.0.0.1:13306
+REDIS_PORT=127.0.0.1:7654
+
+# ------------------------------
+# Timezone
+# ------------------------------
+TZ=${MAILCOW_TZ}
+
+# ------------------------------
+# Project name
+# ------------------------------
+COMPOSE_PROJECT_NAME=mailcowdockerized
+DOCKER_COMPOSE_VERSION=${COMPOSE_VERSION}
+
+# ------------------------------
+# Additional settings
+# ------------------------------
+ACL_ANYONE=disallow
+MAILDIR_GC_TIME=7200
+ADDITIONAL_SAN=
+AUTODISCOVER_SAN=y
+ADDITIONAL_SERVER_NAMES=
+SKIP_LETS_ENCRYPT=n
+ENABLE_SSL_SNI=n
+SKIP_IP_CHECK=n
+SKIP_HTTP_VERIFICATION=n
+SKIP_UNBOUND_HEALTHCHECK=n
+SKIP_CLAMD=${SKIP_CLAMD}
+SKIP_OLEFY=n
+SKIP_SOGO=n
+SKIP_FTS=n
+FTS_HEAP=128
+FTS_PROCS=1
+ALLOW_ADMIN_EMAIL_LOGIN=n
+USE_WATCHDOG=y
+WATCHDOG_NOTIFY_BAN=n
+WATCHDOG_NOTIFY_START=y
+WATCHDOG_EXTERNAL_CHECKS=n
+WATCHDOG_VERBOSE=n
+LOG_LINES=9999
+IPV4_NETWORK=172.22.1
+IPV6_NETWORK=fd4d:6169:6c63:6f77::/64
+MAILDIR_SUB=Maildir
+SOGO_EXPIRE_SESSION=480
+SOGO_URL_ENCRYPTION_KEY=${SOGO_KEY}
+DOVECOT_MASTER_USER=
+DOVECOT_MASTER_PASS=
+WEBAUTHN_ONLY_TRUSTED_VENDORS=n
+SPAMHAUS_DQS_KEY=
+ENABLE_IPV6=${IPV6_BOOL}
+DISABLE_NETFILTER_ISOLATION_RULE=n
+EOF
+
+    chmod 600 mailcow.conf
+    
+    # Create .env symlink
+    ln -sf mailcow.conf .env
+    
+    # Create directories
+    mkdir -p data/assets/ssl
+    mkdir -p data/assets/ssl-example
+    
+    # Generate self-signed certificate
+    echo "Generating self-signed certificate..."
+    openssl req -x509 -newkey rsa:4096 -keyout data/assets/ssl-example/key.pem \
+        -out data/assets/ssl-example/cert.pem -days 365 \
+        -subj "/C=US/ST=State/L=City/O=mailcow/OU=mailcow/CN=${MAILCOW_HOSTNAME}" \
+        -sha256 -nodes 2>/dev/null
+    
+    cp -n data/assets/ssl-example/*.pem data/assets/ssl/ 2>/dev/null || true
+    
+    echo ""
+    echo -e "${GREEN}✓ Configuration generated successfully!${NC}"
+    echo ""
+    echo "Configuration summary:"
+    echo "  Hostname: $MAILCOW_HOSTNAME"
+    echo "  Timezone: $MAILCOW_TZ"
+    echo "  ClamAV:   $([ "$SKIP_CLAMD" = "y" ] && echo "Disabled" || echo "Enabled")"
+    echo "  IPv6:     $IPV6_BOOL"
+    echo "  Location: $INSTALL_DIR/mailcow.conf"
+    echo ""
+    echo "Next step: Run '$0 install' to install mailcow"
+}
+
 # Install function
 install_mailcow() {
-    echo -e "${YELLOW}Install feature coming soon...${NC}"
-    exit 0
+    local INSTALL_DIR="/opt/mailcow-dockerized"
+    
+    echo -e "${BLUE}Installing mailcow...${NC}"
+    echo ""
+    
+    # Check if we're in mailcow directory
+    if [ -f "docker-compose.yml" ] && grep -q "mailcow" "docker-compose.yml" 2>/dev/null; then
+        INSTALL_DIR="$PWD"
+    elif [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}Error: Mailcow directory not found${NC}"
+        echo ""
+        echo "Please clone mailcow first:"
+        echo -e "${BLUE}cd /opt"
+        echo "git clone https://github.com/mailcow/mailcow-dockerized"
+        echo "cd mailcow-dockerized${NC}"
+        exit 1
+    fi
+    
+    cd "$INSTALL_DIR" || exit 1
+    
+    # Check if config exists
+    if [ ! -f mailcow.conf ]; then
+        echo -e "${RED}Error: mailcow.conf not found!${NC}"
+        echo "Please run '$0 config <hostname> <timezone>' first"
+        exit 1
+    fi
+    
+    # Check if mailcow is already running
+    if docker ps --format '{{.Names}}' | grep -q "mailcow"; then
+        echo -e "${YELLOW}Warning: Mailcow containers are already running!${NC}"
+        docker ps --filter "name=mailcow" --format "table {{.Names}}\t{{.Status}}"
+        echo ""
+        read -p "Do you want to reinstall? This will stop existing containers. [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Installation cancelled"
+            exit 0
+        fi
+        echo "Stopping existing containers..."
+        docker compose down 2>/dev/null || docker-compose down 2>/dev/null
+    fi
+    
+    # Pull images
+    echo ""
+    echo -e "${BLUE}Pulling Docker images...${NC}"
+    if docker compose version &> /dev/null; then
+        docker compose pull
+    else
+        docker-compose pull
+    fi
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to pull Docker images${NC}"
+        exit 1
+    fi
+    
+    # Start containers
+    echo ""
+    echo -e "${BLUE}Starting mailcow containers...${NC}"
+    if docker compose version &> /dev/null; then
+        docker compose up -d
+    else
+        docker-compose up -d
+    fi
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${GREEN}✓ Mailcow installed successfully!${NC}"
+        echo ""
+        echo "Access your mailcow instance at:"
+        echo -e "${BLUE}https://$(grep MAILCOW_HOSTNAME mailcow.conf | cut -d'=' -f2)${NC}"
+        echo ""
+        echo "Default credentials:"
+        echo "  Username: admin"
+        echo "  Password: moohoo"
+        echo ""
+        echo -e "${YELLOW}Please change the default password immediately!${NC}"
+    else
+        echo -e "${RED}Failed to start mailcow containers${NC}"
+        exit 1
+    fi
 }
 
 # Uninstall function
 uninstall_mailcow() {
-    echo -e "${YELLOW}Uninstall feature coming soon...${NC}"
-    exit 0
+    local INSTALL_DIR="/opt/mailcow-dockerized"
+    
+    echo -e "${RED}Uninstalling mailcow...${NC}"
+    echo ""
+    
+    # Check if we're in mailcow directory
+    if [ -f "docker-compose.yml" ] && grep -q "mailcow" "docker-compose.yml" 2>/dev/null; then
+        INSTALL_DIR="$PWD"
+    elif [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${YELLOW}Mailcow directory not found${NC}"
+        echo "Nothing to uninstall"
+        exit 0
+    fi
+    
+    cd "$INSTALL_DIR" || exit 1
+    
+    # Check if any mailcow containers are running
+    if ! docker ps -a --format '{{.Names}}' | grep -q "mailcow"; then
+        echo -e "${YELLOW}No mailcow containers found${NC}"
+        read -p "Do you want to remove the installation directory? [y/N] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            cd /opt
+            rm -rf "$INSTALL_DIR"
+            echo -e "${GREEN}✓ Installation directory removed${NC}"
+        fi
+        exit 0
+    fi
+    
+    # Show what will be removed
+    echo "The following containers will be stopped and removed:"
+    docker ps -a --filter "name=mailcow" --format "table {{.Names}}\t{{.Status}}"
+    echo ""
+    echo -e "${RED}WARNING: This will remove all mailcow containers, volumes, and images!${NC}"
+    echo -e "${RED}All emails and data will be permanently deleted!${NC}"
+    echo ""
+    read -p "Are you sure you want to continue? [y/N] " -n 1 -r
+    echo
+    
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Uninstall cancelled"
+        exit 0
+    fi
+    
+    echo ""
+    echo "Stopping and removing mailcow..."
+    
+    # Stop and remove everything
+    if docker compose version &> /dev/null; then
+        docker compose down -v --rmi all --remove-orphans
+    else
+        docker-compose down -v --rmi all --remove-orphans
+    fi
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${GREEN}✓ Mailcow containers removed successfully${NC}"
+        echo ""
+        read -p "Do you want to remove the installation directory? [y/N] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            cd /opt
+            rm -rf "$INSTALL_DIR"
+            echo -e "${GREEN}✓ Installation directory removed${NC}"
+        else
+            echo "Installation directory kept at: $INSTALL_DIR"
+        fi
+    else
+        echo -e "${RED}Failed to remove mailcow containers${NC}"
+        exit 1
+    fi
 }
 
 # Main script
@@ -358,6 +720,15 @@ fi
 case "$1" in
     check)
         check_environment
+        ;;
+    config)
+        if [ $# -lt 3 ]; then
+            echo -e "${RED}Error: Missing arguments${NC}"
+            echo "Usage: $0 config <hostname> <timezone>"
+            echo "Example: $0 config mail.example.com Asia/Shanghai"
+            exit 1
+        fi
+        generate_config "$2" "$3"
         ;;
     install)
         install_mailcow

@@ -55,6 +55,26 @@ check_result() {
     fi
 }
 
+# Fix Docker cgroup configuration for cgroup v2
+fix_docker_cgroup() {
+    if mount | grep -q "cgroup2"; then
+        if [ ! -f /etc/docker/daemon.json ]; then
+            echo '{"exec-opts": ["native.cgroupdriver=cgroupfs"]}' > /etc/docker/daemon.json
+            systemctl restart docker
+            echo -e "${GREEN}✓ Docker cgroup driver configured for cgroup v2${NC}"
+        elif ! grep -q "cgroupdriver" /etc/docker/daemon.json; then
+            cp /etc/docker/daemon.json /etc/docker/daemon.json.bak
+            if grep -q "^{}" /etc/docker/daemon.json || [ ! -s /etc/docker/daemon.json ]; then
+                echo '{"exec-opts": ["native.cgroupdriver=cgroupfs"]}' > /etc/docker/daemon.json
+            else
+                sed -i 's/^{/{\"exec-opts\": [\"native.cgroupdriver=cgroupfs\"],/' /etc/docker/daemon.json
+            fi
+            systemctl restart docker
+            echo -e "${GREEN}✓ Docker cgroup driver updated for cgroup v2${NC}"
+        fi
+    fi
+}
+
 # Environment check function
 check_environment() {
     # 1. Architecture Check
@@ -231,6 +251,17 @@ check_environment() {
         else
             check_result "FAIL" "Docker Compose not found"
         fi
+        
+        # Check cgroup version
+        if mount | grep -q "cgroup2"; then
+            if grep -q "cgroupdriver=cgroupfs" /etc/docker/daemon.json 2>/dev/null; then
+                check_result "PASS" "cgroup v2 with cgroupfs driver"
+            else
+                check_result "WARN" "cgroup v2 detected, may need cgroupfs driver"
+            fi
+        else
+            check_result "PASS" "cgroup v1"
+        fi
     else
         check_result "FAIL" "Docker not installed"
     fi
@@ -264,12 +295,10 @@ check_environment() {
     if [ "$FAIL" -eq 0 ]; then
         echo -e "${GREEN}✓ System meets mailcow requirements${NC}"
         
-        # Check for warnings and provide suggestions
         if [ "$WARN" -gt 0 ]; then
             echo ""
             echo -e "${YELLOW}Optional Improvements:${NC}"
             
-            # Check for SWAP warning
             SWAP_KB=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
             SWAP_GB=$((SWAP_KB / 1024 / 1024))
             if [ "$SWAP_GB" -lt 1 ] 2>/dev/null; then
@@ -281,10 +310,8 @@ check_environment() {
         echo -e "${RED}✗ System does not meet all requirements${NC}"
         echo ""
         
-        # Build fix command
         FIX_CMD=""
         
-        # Check for NTP issue
         if command -v timedatectl &> /dev/null; then
             NTP_STATUS=$(timedatectl status 2>/dev/null | grep "NTP" | tail -1 || echo "")
             if ! echo "$NTP_STATUS" | grep -q "yes" 2>/dev/null; then
@@ -292,7 +319,6 @@ check_environment() {
             fi
         fi
         
-        # Check for Docker Compose
         if command -v docker &> /dev/null; then
             if ! docker compose version &> /dev/null; then
                 FIX_CMD="${FIX_CMD}apt-get update && apt-get install -y docker-compose-plugin && "
@@ -301,7 +327,6 @@ check_environment() {
             FIX_CMD="${FIX_CMD}curl -fsSL https://get.docker.com | bash && "
         fi
         
-        # Remove trailing " && "
         FIX_CMD="${FIX_CMD% && }"
         
         if [ -n "$FIX_CMD" ]; then
@@ -312,13 +337,12 @@ check_environment() {
     fi
 }
 
-# Config function - Generate mailcow.conf without interaction
+# Config function
 generate_config() {
     local MAILCOW_HOSTNAME=$1
     local MAILCOW_TZ=$2
     local INSTALL_DIR="/opt/mailcow-dockerized"
     
-    # Validate hostname
     if [ -z "$MAILCOW_HOSTNAME" ]; then
         echo -e "${RED}Error: Hostname is required${NC}"
         exit 1
@@ -333,13 +357,11 @@ generate_config() {
         exit 1
     fi
     
-    # Validate timezone
     if [ -z "$MAILCOW_TZ" ]; then
         echo -e "${RED}Error: Timezone is required${NC}"
         exit 1
     fi
     
-    # Check if we're in mailcow directory
     if [ -f "docker-compose.yml" ] && grep -q "mailcow" "docker-compose.yml" 2>/dev/null; then
         INSTALL_DIR="$PWD"
     elif [ ! -d "$INSTALL_DIR" ]; then
@@ -349,12 +371,10 @@ generate_config() {
     
     cd "$INSTALL_DIR" || exit 1
     
-    # Backup existing config
     if [ -f mailcow.conf ]; then
         mv mailcow.conf "mailcow.conf.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
     fi
     
-    # Detect memory for ClamAV decision
     MEM_TOTAL=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
     if [ "${MEM_TOTAL}" -le "2621440" ]; then
         SKIP_CLAMD=y
@@ -362,20 +382,17 @@ generate_config() {
         SKIP_CLAMD=n
     fi
     
-    # Generate passwords
     DBPASS=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2> /dev/null | head -c 28)
     DBROOT=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2> /dev/null | head -c 28)
     REDISPASS=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2> /dev/null | head -c 28)
     SOGO_KEY=$(LC_ALL=C </dev/urandom tr -dc A-Za-z0-9 2>/dev/null | head -c 16)
     
-    # Detect Docker Compose version
     if docker compose version &> /dev/null; then
         COMPOSE_VERSION="native"
     else
         COMPOSE_VERSION="standalone"
     fi
     
-    # Detect IPv6
     if ip -6 addr show | grep -q "inet6" && ! ip -6 addr show | grep -qE "inet6 ::1|inet6 fe80:"; then
         IPV6_BOOL="true"
     else
@@ -498,7 +515,6 @@ EOF
 install_mailcow() {
     local INSTALL_DIR="/opt/mailcow-dockerized"
     
-    # Check if we're in mailcow directory
     if [ -f "docker-compose.yml" ] && grep -q "mailcow" "docker-compose.yml" 2>/dev/null; then
         INSTALL_DIR="$PWD"
     elif [ ! -d "$INSTALL_DIR" ]; then
@@ -508,19 +524,18 @@ install_mailcow() {
     
     cd "$INSTALL_DIR" || exit 1
     
-    # Check if config exists
     if [ ! -f mailcow.conf ]; then
         echo -e "${RED}Error: mailcow.conf not found${NC}"
         exit 1
     fi
     
-    # Check if mailcow is already running
+    fix_docker_cgroup
+    
     if docker ps --format '{{.Names}}' | grep -q "mailcow"; then
         echo -e "${YELLOW}Mailcow is already running, stopping...${NC}"
         docker compose down 2>/dev/null || docker-compose down 2>/dev/null
     fi
     
-    # Pull images quietly
     echo "Pulling Docker images..."
     if docker compose version &> /dev/null; then
         docker compose pull -q
@@ -533,7 +548,6 @@ install_mailcow() {
         exit 1
     fi
     
-    # Start containers
     echo "Starting mailcow containers..."
     if docker compose version &> /dev/null; then
         docker compose up -d

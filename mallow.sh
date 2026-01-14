@@ -28,13 +28,14 @@ show_usage() {
     echo "  check                          - Check system environment"
     echo "  config <hostname> <timezone>   - Generate mailcow configuration"
     echo "  install                        - Install mailcow"
-    echo "  uninstall                      - Uninstall mailcow"
+    echo "  uninstall [-y]                 - Uninstall mailcow"
     echo ""
     echo "Examples:"
     echo "  $0 check"
     echo "  $0 config mail.example.com Asia/Shanghai"
     echo "  $0 install"
     echo "  $0 uninstall"
+    echo "  $0 uninstall -y"
     exit 0
 }
 
@@ -557,7 +558,7 @@ uninstall_mailcow() {
     local INSTALL_DIR="/opt/mailcow-dockerized"
     local FORCE=false
     
-    if [[ "$1" == "-y" ]] || [[ "$1" == "--yes" ]]; then
+    if [[ "${1:-}" == "-y" ]] || [[ "${1:-}" == "--yes" ]]; then
         FORCE=true
     fi
     
@@ -624,7 +625,7 @@ case "$1" in
         install_mailcow
         ;;
     uninstall)
-        uninstall_mailcow
+        uninstall_mailcow "${2:-}"
         ;;
     -h|--help|help)
         show_usage

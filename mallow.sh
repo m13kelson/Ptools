@@ -57,11 +57,6 @@ check_result() {
 
 # Environment check function
 check_environment() {
-    echo "======================================"
-    echo "Mailcow Environment Check"
-    echo "======================================"
-    echo ""
-
     # 1. Architecture Check
     echo "[System Architecture]"
     ARCH=$(uname -m)
@@ -73,7 +68,6 @@ check_environment() {
     echo ""
     
     # 2. OS Check
-    echo "[Operating System]"
     if [ -f /etc/os-release ]; then
         set +u
         . /etc/os-release
@@ -120,7 +114,6 @@ check_environment() {
     echo ""
     
     # 3. Virtualization Check
-    echo "[Virtualization]"
     VIRT_TYPE="Unknown"
     if command -v systemd-detect-virt &> /dev/null; then
         VIRT_TYPE=$(systemd-detect-virt 2>/dev/null || echo "Unknown")
@@ -147,7 +140,6 @@ check_environment() {
     echo ""
 
     # 4. CPU Check
-    echo "[CPU]"
     CPU_COUNT=$(nproc 2>/dev/null || echo "1")
     CPU_MHZ=$(lscpu 2>/dev/null | grep "CPU MHz" | awk '{print $3}' | cut -d'.' -f1 || echo "")
     if [ -z "$CPU_MHZ" ]; then
@@ -162,7 +154,6 @@ check_environment() {
     echo ""
 
     # 5. RAM Check
-    echo "[Memory]"
     TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
     TOTAL_RAM_GB=$((TOTAL_RAM_KB / 1024 / 1024))
     SWAP_KB=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
@@ -182,7 +173,6 @@ check_environment() {
     echo ""
 
     # 6. Disk Space Check
-    echo "[Disk Space]"
     DISK_AVAIL=$(df / 2>/dev/null | tail -1 | awk '{print $4}' || echo "0")
     DISK_AVAIL_GB=$((DISK_AVAIL / 1024 / 1024))
 
@@ -194,7 +184,6 @@ check_environment() {
     echo ""
 
     # 7. Port Check
-    echo "[Port Availability]"
     REQUIRED_PORTS=(25 80 110 143 443 465 587 993 995 4190)
     for PORT in "${REQUIRED_PORTS[@]}"; do
         if ss -tlnp 2>/dev/null | grep -q ":$PORT " || netstat -tlnp 2>/dev/null | grep -q ":$PORT "; then
@@ -206,7 +195,6 @@ check_environment() {
     echo ""
 
     # 8. Firewall Check
-    echo "[Firewall]"
     if systemctl is-active --quiet firewalld 2>/dev/null; then
         check_result "WARN" "firewalld is active (May cause issues with Docker)"
     elif systemctl is-active --quiet ufw 2>/dev/null; then
@@ -217,7 +205,6 @@ check_environment() {
     echo ""
 
     # 9. Time Sync Check
-    echo "[Date and Time]"
     if command -v timedatectl &> /dev/null; then
         NTP_STATUS=$(timedatectl status 2>/dev/null | grep "NTP" | tail -1 || echo "")
         if echo "$NTP_STATUS" | grep -q "yes" 2>/dev/null; then
@@ -234,7 +221,6 @@ check_environment() {
     echo ""
 
     # 10. Docker Check
-    echo "[Docker]"
     if command -v docker &> /dev/null; then
         DOCKER_VERSION=$(docker --version 2>/dev/null | awk '{print $3}' | sed 's/,//' || echo "Unknown")
         check_result "PASS" "Docker installed: $DOCKER_VERSION"
@@ -251,7 +237,6 @@ check_environment() {
     echo ""
 
     # 11. MTU Check
-    echo "[Network MTU]"
     if command -v ip &> /dev/null; then
         DEFAULT_IFACE=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -1 || echo "")
         if [ -n "$DEFAULT_IFACE" ]; then

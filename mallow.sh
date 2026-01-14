@@ -1,9 +1,8 @@
 #!/bin/bash
 
 # Mailcow Management Script
-# Usage: ./mailcow.sh [check|install|uninstall]
+# Usage: ./mailcow.sh [check|config|install|uninstall]
 
-# Disable errexit to prevent early exit on command failures
 set +e
 set -uo pipefail
 
@@ -12,7 +11,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Result counters
 PASS=0
@@ -268,18 +267,13 @@ check_environment() {
         if [ "$WARN" -gt 0 ]; then
             echo ""
             echo -e "${YELLOW}Optional Improvements:${NC}"
-            echo "======================================"
             
             # Check for SWAP warning
             SWAP_KB=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo "0")
             SWAP_GB=$((SWAP_KB / 1024 / 1024))
             if [ "$SWAP_GB" -lt 1 ] 2>/dev/null; then
-                echo -e "- Add SWAP space (Recommended: 2GB+):\n"
-                echo -e "${BLUE}fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab${NC}"
-                echo ""
+                echo -e "- Add SWAP space: ${BLUE}fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile${NC}"
             fi
-            
-            echo "======================================"
         fi
         return 0
     else
@@ -288,14 +282,12 @@ check_environment() {
         
         # Build fix command
         FIX_CMD=""
-        FIX_DESC=""
         
         # Check for NTP issue
         if command -v timedatectl &> /dev/null; then
             NTP_STATUS=$(timedatectl status 2>/dev/null | grep "NTP" | tail -1 || echo "")
             if ! echo "$NTP_STATUS" | grep -q "yes" 2>/dev/null; then
-                FIX_CMD="${FIX_CMD}timedatectl set-ntp true && systemctl restart systemd-timesyncd && "
-                FIX_DESC="${FIX_DESC}- Enable NTP time sync\n"
+                FIX_CMD="${FIX_CMD}timedatectl set-ntp true && "
             fi
         fi
         
@@ -303,12 +295,9 @@ check_environment() {
         if command -v docker &> /dev/null; then
             if ! docker compose version &> /dev/null; then
                 FIX_CMD="${FIX_CMD}apt-get update && apt-get install -y docker-compose-plugin && "
-                FIX_DESC="${FIX_DESC}- Install Docker Compose Plugin\n"
             fi
         else
-            # Docker not installed
             FIX_CMD="${FIX_CMD}curl -fsSL https://get.docker.com | bash && "
-            FIX_DESC="${FIX_DESC}- Install Docker & Docker Compose\n"
         fi
         
         # Remove trailing " && "
@@ -316,12 +305,7 @@ check_environment() {
         
         if [ -n "$FIX_CMD" ]; then
             echo -e "${YELLOW}Quick Fix:${NC}"
-            echo "======================================"
-            echo -e "$FIX_DESC"
             echo -e "${BLUE}${FIX_CMD}${NC}"
-            echo "======================================"
-        else
-            echo "No automatic fix available"
         fi
         return 1
     fi
@@ -333,13 +317,9 @@ generate_config() {
     local MAILCOW_TZ=$2
     local INSTALL_DIR="/opt/mailcow-dockerized"
     
-    echo -e "${BLUE}Generating mailcow configuration...${NC}"
-    echo ""
-    
     # Validate hostname
     if [ -z "$MAILCOW_HOSTNAME" ]; then
         echo -e "${RED}Error: Hostname is required${NC}"
-        echo "Usage: $0 config <hostname> <timezone>"
         exit 1
     fi
     
@@ -355,37 +335,28 @@ generate_config() {
     # Validate timezone
     if [ -z "$MAILCOW_TZ" ]; then
         echo -e "${RED}Error: Timezone is required${NC}"
-        echo "Usage: $0 config <hostname> <timezone>"
         exit 1
     fi
     
-    # Check if we're in mailcow directory (has docker-compose.yml)
+    # Check if we're in mailcow directory
     if [ -f "docker-compose.yml" ] && grep -q "mailcow" "docker-compose.yml" 2>/dev/null; then
         INSTALL_DIR="$PWD"
-        echo "Using current directory: $INSTALL_DIR"
     elif [ ! -d "$INSTALL_DIR" ]; then
-        echo -e "${RED}Error: Mailcow directory not found${NC}"
-        echo ""
-        echo "Please clone mailcow first:"
-        echo -e "${BLUE}cd /opt"
-        echo "git clone https://github.com/mailcow/mailcow-dockerized"
-        echo "cd mailcow-dockerized${NC}"
+        echo -e "${RED}Error: Mailcow directory not found at $INSTALL_DIR${NC}"
         exit 1
     fi
     
     cd "$INSTALL_DIR" || exit 1
     
-    # Check for existing config
+    # Backup existing config
     if [ -f mailcow.conf ]; then
-        echo -e "${YELLOW}Backing up existing mailcow.conf...${NC}"
-        mv mailcow.conf "mailcow.conf.backup.$(date +%Y%m%d_%H%M%S)"
+        mv mailcow.conf "mailcow.conf.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null
     fi
     
     # Detect memory for ClamAV decision
     MEM_TOTAL=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
     if [ "${MEM_TOTAL}" -le "2621440" ]; then
         SKIP_CLAMD=y
-        echo -e "${YELLOW}Low memory detected, disabling ClamAV${NC}"
     else
         SKIP_CLAMD=n
     fi
@@ -409,8 +380,6 @@ generate_config() {
     else
         IPV6_BOOL="false"
     fi
-    
-    echo "Creating mailcow.conf..."
     
     cat << EOF > mailcow.conf
 # ------------------------------
@@ -507,16 +476,10 @@ DISABLE_NETFILTER_ISOLATION_RULE=n
 EOF
 
     chmod 600 mailcow.conf
-    
-    # Create .env symlink
     ln -sf mailcow.conf .env
     
-    # Create directories
-    mkdir -p data/assets/ssl
-    mkdir -p data/assets/ssl-example
+    mkdir -p data/assets/ssl data/assets/ssl-example
     
-    # Generate self-signed certificate
-    echo "Generating self-signed certificate..."
     openssl req -x509 -newkey rsa:4096 -keyout data/assets/ssl-example/key.pem \
         -out data/assets/ssl-example/cert.pem -days 365 \
         -subj "/C=US/ST=State/L=City/O=mailcow/OU=mailcow/CN=${MAILCOW_HOSTNAME}" \
@@ -524,36 +487,21 @@ EOF
     
     cp -n data/assets/ssl-example/*.pem data/assets/ssl/ 2>/dev/null || true
     
-    echo ""
-    echo -e "${GREEN}✓ Configuration generated successfully!${NC}"
-    echo ""
-    echo "Configuration summary:"
-    echo "  Hostname: $MAILCOW_HOSTNAME"
-    echo "  Timezone: $MAILCOW_TZ"
-    echo "  ClamAV:   $([ "$SKIP_CLAMD" = "y" ] && echo "Disabled" || echo "Enabled")"
-    echo "  IPv6:     $IPV6_BOOL"
-    echo "  Location: $INSTALL_DIR/mailcow.conf"
-    echo ""
-    echo "Next step: Run '$0 install' to install mailcow"
+    echo -e "${GREEN}✓ Configuration generated${NC}"
+    echo "Hostname: $MAILCOW_HOSTNAME"
+    echo "Timezone: $MAILCOW_TZ"
+    echo "ClamAV: $([ "$SKIP_CLAMD" = "y" ] && echo "Disabled" || echo "Enabled")"
 }
 
 # Install function
 install_mailcow() {
     local INSTALL_DIR="/opt/mailcow-dockerized"
     
-    echo -e "${BLUE}Installing mailcow...${NC}"
-    echo ""
-    
     # Check if we're in mailcow directory
     if [ -f "docker-compose.yml" ] && grep -q "mailcow" "docker-compose.yml" 2>/dev/null; then
         INSTALL_DIR="$PWD"
     elif [ ! -d "$INSTALL_DIR" ]; then
-        echo -e "${RED}Error: Mailcow directory not found${NC}"
-        echo ""
-        echo "Please clone mailcow first:"
-        echo -e "${BLUE}cd /opt"
-        echo "git clone https://github.com/mailcow/mailcow-dockerized"
-        echo "cd mailcow-dockerized${NC}"
+        echo -e "${RED}Error: Mailcow directory not found at $INSTALL_DIR${NC}"
         exit 1
     fi
     
@@ -561,33 +509,22 @@ install_mailcow() {
     
     # Check if config exists
     if [ ! -f mailcow.conf ]; then
-        echo -e "${RED}Error: mailcow.conf not found!${NC}"
-        echo "Please run '$0 config <hostname> <timezone>' first"
+        echo -e "${RED}Error: mailcow.conf not found${NC}"
         exit 1
     fi
     
     # Check if mailcow is already running
     if docker ps --format '{{.Names}}' | grep -q "mailcow"; then
-        echo -e "${YELLOW}Warning: Mailcow containers are already running!${NC}"
-        docker ps --filter "name=mailcow" --format "table {{.Names}}\t{{.Status}}"
-        echo ""
-        read -p "Do you want to reinstall? This will stop existing containers. [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo "Installation cancelled"
-            exit 0
-        fi
-        echo "Stopping existing containers..."
+        echo -e "${YELLOW}Mailcow is already running, stopping...${NC}"
         docker compose down 2>/dev/null || docker-compose down 2>/dev/null
     fi
     
-    # Pull images
-    echo ""
-    echo -e "${BLUE}Pulling Docker images...${NC}"
+    # Pull images quietly
+    echo "Pulling Docker images..."
     if docker compose version &> /dev/null; then
-        docker compose pull
+        docker compose pull -q
     else
-        docker-compose pull
+        docker-compose pull -q
     fi
     
     if [ $? -ne 0 ]; then
@@ -596,8 +533,7 @@ install_mailcow() {
     fi
     
     # Start containers
-    echo ""
-    echo -e "${BLUE}Starting mailcow containers...${NC}"
+    echo "Starting mailcow containers..."
     if docker compose version &> /dev/null; then
         docker compose up -d
     else
@@ -605,16 +541,10 @@ install_mailcow() {
     fi
     
     if [ $? -eq 0 ]; then
-        echo ""
-        echo -e "${GREEN}✓ Mailcow installed successfully!${NC}"
-        echo ""
-        echo "Access your mailcow instance at:"
-        echo -e "${BLUE}https://$(grep MAILCOW_HOSTNAME mailcow.conf | cut -d'=' -f2)${NC}"
-        echo ""
-        echo "Default credentials:"
-        echo "  Username: admin"
-        echo "  Password: moohoo"
-        echo ""
+        HOSTNAME=$(grep MAILCOW_HOSTNAME mailcow.conf | cut -d'=' -f2)
+        echo -e "${GREEN}✓ Mailcow installed successfully${NC}"
+        echo "Access: https://${HOSTNAME}"
+        echo "Login: admin / moohoo"
         echo -e "${YELLOW}Please change the default password immediately!${NC}"
     else
         echo -e "${RED}Failed to start mailcow containers${NC}"
@@ -626,41 +556,25 @@ install_mailcow() {
 uninstall_mailcow() {
     local INSTALL_DIR="/opt/mailcow-dockerized"
     
-    echo -e "${RED}Uninstalling mailcow...${NC}"
-    echo ""
-    
     # Check if we're in mailcow directory
     if [ -f "docker-compose.yml" ] && grep -q "mailcow" "docker-compose.yml" 2>/dev/null; then
         INSTALL_DIR="$PWD"
     elif [ ! -d "$INSTALL_DIR" ]; then
         echo -e "${YELLOW}Mailcow directory not found${NC}"
-        echo "Nothing to uninstall"
         exit 0
     fi
     
     cd "$INSTALL_DIR" || exit 1
     
-    # Check if any mailcow containers are running
+    # Check if any mailcow containers exist
     if ! docker ps -a --format '{{.Names}}' | grep -q "mailcow"; then
         echo -e "${YELLOW}No mailcow containers found${NC}"
-        read -p "Do you want to remove the installation directory? [y/N] " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            cd /opt
-            rm -rf "$INSTALL_DIR"
-            echo -e "${GREEN}✓ Installation directory removed${NC}"
-        fi
         exit 0
     fi
     
-    # Show what will be removed
-    echo "The following containers will be stopped and removed:"
-    docker ps -a --filter "name=mailcow" --format "table {{.Names}}\t{{.Status}}"
-    echo ""
     echo -e "${RED}WARNING: This will remove all mailcow containers, volumes, and images!${NC}"
     echo -e "${RED}All emails and data will be permanently deleted!${NC}"
-    echo ""
-    read -p "Are you sure you want to continue? [y/N] " -n 1 -r
+    read -p "Continue? [y/N] " -n 1 -r
     echo
     
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -668,10 +582,8 @@ uninstall_mailcow() {
         exit 0
     fi
     
-    echo ""
-    echo "Stopping and removing mailcow..."
+    echo "Removing mailcow..."
     
-    # Stop and remove everything
     if docker compose version &> /dev/null; then
         docker compose down -v --rmi all --remove-orphans
     else
@@ -679,20 +591,9 @@ uninstall_mailcow() {
     fi
     
     if [ $? -eq 0 ]; then
-        echo ""
-        echo -e "${GREEN}✓ Mailcow containers removed successfully${NC}"
-        echo ""
-        read -p "Do you want to remove the installation directory? [y/N] " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            cd /opt
-            rm -rf "$INSTALL_DIR"
-            echo -e "${GREEN}✓ Installation directory removed${NC}"
-        else
-            echo "Installation directory kept at: $INSTALL_DIR"
-        fi
+        echo -e "${GREEN}✓ Mailcow removed successfully${NC}"
     else
-        echo -e "${RED}Failed to remove mailcow containers${NC}"
+        echo -e "${RED}Failed to remove mailcow${NC}"
         exit 1
     fi
 }
@@ -710,7 +611,6 @@ case "$1" in
         if [ $# -lt 3 ]; then
             echo -e "${RED}Error: Missing arguments${NC}"
             echo "Usage: $0 config <hostname> <timezone>"
-            echo "Example: $0 config mail.example.com Asia/Shanghai"
             exit 1
         fi
         generate_config "$2" "$3"
@@ -726,7 +626,6 @@ case "$1" in
         ;;
     *)
         echo -e "${RED}Error: Unknown command '$1'${NC}"
-        echo ""
         show_usage
         ;;
 esac

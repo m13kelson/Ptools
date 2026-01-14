@@ -616,6 +616,7 @@ uninstall_mailcow() {
         echo -e "${RED}Failed to remove mailcow${NC}"
         exit 1
     fi
+    rm -rf "$INSTALL_DIR"
 }
 
 # Main script

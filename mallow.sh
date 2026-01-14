@@ -555,8 +555,12 @@ install_mailcow() {
 # Uninstall function
 uninstall_mailcow() {
     local INSTALL_DIR="/opt/mailcow-dockerized"
+    local FORCE=false
     
-    # Check if we're in mailcow directory
+    if [[ "$1" == "-y" ]] || [[ "$1" == "--yes" ]]; then
+        FORCE=true
+    fi
+    
     if [ -f "docker-compose.yml" ] && grep -q "mailcow" "docker-compose.yml" 2>/dev/null; then
         INSTALL_DIR="$PWD"
     elif [ ! -d "$INSTALL_DIR" ]; then
@@ -566,20 +570,21 @@ uninstall_mailcow() {
     
     cd "$INSTALL_DIR" || exit 1
     
-    # Check if any mailcow containers exist
     if ! docker ps -a --format '{{.Names}}' | grep -q "mailcow"; then
         echo -e "${YELLOW}No mailcow containers found${NC}"
         exit 0
     fi
     
-    echo -e "${RED}WARNING: This will remove all mailcow containers, volumes, and images!${NC}"
-    echo -e "${RED}All emails and data will be permanently deleted!${NC}"
-    read -p "Continue? [y/N] " -n 1 -r
-    echo
-    
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Uninstall cancelled"
-        exit 0
+    if [ "$FORCE" != true ]; then
+        echo -e "${RED}WARNING: This will remove all mailcow containers, volumes, and images!${NC}"
+        echo -e "${RED}All emails and data will be permanently deleted!${NC}"
+        read -p "Continue? [y/N] " -n 1 -r
+        echo
+        
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Uninstall cancelled"
+            exit 0
+        fi
     fi
     
     echo "Removing mailcow..."
@@ -596,7 +601,6 @@ uninstall_mailcow() {
         echo -e "${RED}Failed to remove mailcow${NC}"
         exit 1
     fi
-}
 
 # Main script
 if [ $# -eq 0 ]; then

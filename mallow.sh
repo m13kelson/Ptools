@@ -601,6 +601,7 @@ uninstall_mailcow() {
         echo -e "${RED}Failed to remove mailcow${NC}"
         exit 1
     fi
+}
 
 # Main script
 if [ $# -eq 0 ]; then
@@ -633,4 +634,3 @@ case "$1" in
         show_usage
         ;;
 esac
-}
